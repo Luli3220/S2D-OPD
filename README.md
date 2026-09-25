@@ -1,10 +1,48 @@
-# Not Every Token Is Worth Distilling: Selective Supervision for Direct-OPD
+<h1 align="center">Not Every Token Is Worth Distilling: Selective Supervision for Direct-OPD</h1>
 
-This repository contains the official code release for **<u>S</u>elective <u>S</u>upervision for <u>D</u>irect-OPD** ($S^2$D-OPD).
+<p align="center">
+  <b>Distill the RL-induced policy shifts that matter most.</b>
+</p>
+
+<p align="center">
+  Yibo Zhao* · Zixuan Yang* · Yunshi Lan · Xiang Li†
+</p>
+
+<p align="center">
+  School of Data Science and Engineering<br>
+  East China Normal University
+</p>
+
+<p align="center">
+  * Equal contribution · † Corresponding author
+</p>
+
+<p align="center">
+  <a href="https://hub.docker.com/r/yibozhao624/selective-direct-opd">
+    <img src="https://img.shields.io/badge/Docker-Environment-2496ED?style=for-the-badge&amp;logo=docker&amp;logoColor=white" alt="Docker environment">
+  </a>
+  <a href="https://arxiv.org/abs/2609.29142">
+    <img src="https://img.shields.io/badge/arXiv-2609.29142-B31B1B?style=for-the-badge&amp;logo=arxiv&amp;logoColor=white" alt="arXiv paper">
+  </a>
+  <a href="https://huggingface.co/SelectiveDOPD">
+    <img src="https://img.shields.io/badge/Hugging%20Face-Models-FFD21E?style=for-the-badge&amp;logo=huggingface&amp;logoColor=black" alt="Hugging Face models">
+  </a>
+</p>
+
+This repository contains the official code release for **<u>S</u>elective <u>S</u>upervision for <u>D</u>irect-OPD** (S2D-OPD).
 
 ## Quick Start
 
-Install dependencies:
+Use the [prebuilt Docker environment](https://hub.docker.com/r/yibozhao624/selective-direct-opd) with the published image tag:
+
+```bash
+docker pull yibozhao624/selective-direct-opd:cu128-py312-np226-wandb-latest
+docker run --gpus all --rm -it \
+  -v "$PWD":/workspace -w /workspace \
+  yibozhao624/selective-direct-opd:cu128-py312-np226-wandb-latest bash
+```
+
+The image provides the software environment; model weights and the training data must still be prepared as described below. Alternatively, install dependencies with Conda:
 
 ```bash
 conda create -n s2d-opd python=3.12 -y
@@ -139,3 +177,17 @@ By default, the script evaluates AIME26, HMMT November 2025, and HMMT February 2
 ## Acknowledgments
 
 This implementation builds on [Direct-OPD](https://github.com/BytedTsinghua-SIA/Direct-OPD) and [verl](https://github.com/volcengine/verl). We thank their contributors for releasing the code and infrastructure.
+
+## Reference
+
+```bibtex
+@misc{zhao2026tokenworthdistillingselective,
+      title={Not Every Token Is Worth Distilling: Selective Supervision for Direct-OPD},
+      author={Yibo Zhao and Zixuan Yang and Yunshi Lan and Xiang Li},
+      year={2026},
+      eprint={2609.29142},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2609.29142},
+}
+```
