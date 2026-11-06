@@ -92,6 +92,11 @@ See the [setup guide](docs/setup.md) for data preparation, paths, and launch opt
 
 The token-selection implementation is in [`verl/verl/workers/actor/dp_actor.py`](verl/verl/workers/actor/dp_actor.py). Experiment settings and environment-variable overrides are defined in [`scripts/train_s2d_opd.sh`](scripts/train_s2d_opd.sh).
 
+Student-entropy and reward-magnitude selectors, plus separate reward-only and
+KL-only masking ablations, are available through dedicated launchers. See
+[selection and masking ablations](docs/setup.md#selection-and-masking-ablations)
+for commands, signal definitions, and normalization details.
+
 ## Models and data
 
 The datasets under `eval/` have two distinct roles: AIME24 and AIME25 are used for validation during training, while AIME26, HMMT November 2025, and HMMT February 2026 are reserved for held-out evaluation. Download the following model weights separately and place them under `models/`:

@@ -73,6 +73,8 @@ actor_rollout_ref:
     divergence_percentile_areas: []
     js_token_selection_seed: 42
     divergence_estimator: JSD
+    token_selection_score: divergence
+    token_mask_scope: both
     use_kl_loss: false
     use_torch_compile: true
     kl_loss_coef: 2.5

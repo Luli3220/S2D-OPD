@@ -86,6 +86,8 @@ class ActorConfig(BaseConfig):
         divergence_percentile_areas (list[list[float]]): Divergence-rank percentile areas to union.
         js_token_selection_seed (int): Base seed used by random token selection.
         divergence_estimator (str): Ranking divergence. Options: 'JSD', 'FKL', or 'RKL'.
+        token_selection_score (str): 'divergence', 'entropy', or 'reward_magnitude'.
+        token_mask_scope (str): Apply selection to 'both', 'reward_only', or 'kl_only' loss terms.
         use_kl_loss (bool): Whether to use KL divergence loss.
         use_torch_compile (bool): Whether to use torch.compile for optimization.
         kl_loss_coef (float): KL divergence loss coefficient.
@@ -130,6 +132,8 @@ class ActorConfig(BaseConfig):
     divergence_percentile_areas: list[list[float]] = field(default_factory=list)
     js_token_selection_seed: int = 42
     divergence_estimator: str = "JSD"
+    token_selection_score: str = "divergence"
+    token_mask_scope: str = "both"
     use_kl_loss: bool = False
     use_torch_compile: bool = True
     kl_loss_coef: float = 2.5
@@ -247,6 +251,12 @@ class ActorConfig(BaseConfig):
                 "divergence_estimator must be one of "
                 f"{sorted(valid_divergence_estimators)}, got {self.divergence_estimator!r}"
             )
+        if self.token_selection_score not in {"divergence", "entropy", "reward_magnitude"}:
+            raise ValueError(f"Invalid token_selection_score: {self.token_selection_score!r}")
+        if self.token_mask_scope not in {"both", "reward_only", "kl_only"}:
+            raise ValueError(f"Invalid token_mask_scope: {self.token_mask_scope!r}")
+        if self.js_token_filter_enabled and self.token_mask_scope != "both" and not self.use_kl_loss:
+            raise ValueError("Reward-only/KL-only masking ablations require use_kl_loss=True")
 
     def validate(self, n_gpus: int, train_batch_size: int, model_config: dict = None):
         """Validate actor configuration with runtime parameters."""

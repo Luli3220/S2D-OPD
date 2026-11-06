@@ -69,6 +69,7 @@ from verl.utils import hdfs_io
 from verl.workers.actor.dp_actor import (
     _build_divergence_percentile_areas_token_mask,
     _build_pooled_batch_js_ladder_token_mask,
+    _get_token_selection_scores,
 )
 
 
@@ -3012,7 +3013,9 @@ class RayPPOTrainer:
                                 )
                                 batch.batch["js_token_selection_mask"] = (
                                     _build_batch_aggregated_js_token_mask(
-                                        js_divergence=batch.batch["js_divergence"],
+                                        js_divergence=_get_token_selection_scores(
+                                            batch.batch, actor_config.get("token_selection_score", "divergence")
+                                        ),
                                         response_mask=batch.batch["response_mask"],
                                         selection_mode=str(actor_config.js_token_selection_mode),
                                         top_fraction=float(actor_config.js_top_fraction),
