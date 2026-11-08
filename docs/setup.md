@@ -96,6 +96,60 @@ bash scripts/train_s2d_opd.sh
 
 AIME24 and AIME25 are used as validation sets during training. Checkpoints are saved under `${OUTPUT_ROOT}/${EXPERIMENT_NAME}`, and validation generations are written under `${CHECKPOINT_DIR}/outputs/validation_log/`.
 
+## Selection and masking ablations
+
+The following launchers use Qwen3-1.7B with the JustRL teacher/reference pair,
+the existing top-10% per-response selection, and separate experiment directories:
+
+| Experiment | Command | Reward positions | Anchor-KL positions |
+| --- | --- | --- | --- |
+| Student entropy | `bash scripts/train_justrl_qwen_entropy_top10.sh` | Selected | Selected |
+| Reward magnitude | `bash scripts/train_justrl_qwen_reward_magnitude_top10.sh` | Selected | Selected |
+| JSD reward-only mask | `bash scripts/train_justrl_qwen_js_reward_only_top10.sh` | Selected | All valid |
+| JSD KL-only mask | `bash scripts/train_justrl_qwen_js_kl_only_top10.sh` | All valid | Selected |
+
+The main launcher exposes two independent settings:
+
+- `TOKEN_SELECTION_SCORE=divergence|entropy|reward_magnitude` (default: `divergence`).
+  Divergence continues to use `DIVERGENCE_ESTIMATOR=JSD|FKL|RKL`.
+- `TOKEN_MASK_SCOPE=both|reward_only|kl_only` (default: `both`).
+  These options control **where masking applies**, not whether a loss term exists.
+  Both one-term masking ablations require `USE_KL_LOSS=True`.
+
+For example, entropy selection with a dense KL anchor:
+
+```bash
+TOKEN_SELECTION_SCORE=entropy TOKEN_MASK_SCOPE=reward_only \
+JS_TOP_FRACTION=0.10 JS_TOKEN_SELECTION_MODE=relative \
+bash scripts/train_s2d_opd.sh
+```
+
+Entropy is `-sum_v p_student(v) log p_student(v)` over the **full vocabulary**,
+at the training temperature, obtained from the existing student log-probability
+forward. It is not the entropy of renormalized top-16 candidates. Reward magnitude
+is `sum_v p_bar_student(v) * abs(log p_teacher(v) - log p_reference(v))`
+on the existing Direct-OPD candidate support, with normalized student weights.
+Absolute values are taken before summing, so positive and negative shifts do not
+cancel. Neither selector needs an extra model forward. Scores and masks are
+detached and fixed for the actor updates on that rollout batch.
+
+All ranking scopes, percentile intervals and absolute cutoffs apply to the chosen
+score. Thresholds therefore have score-specific units; the legacy `js_*` option
+names are retained for compatibility. Random selection still ignores scores.
+`actor/js_*` score statistics remain teacher/reference divergence diagnostics;
+`actor/selection_score_*` reports the actual ranking signal. The reward and KL
+keep ratios are logged separately as `actor/reward_token_keep_ratio` and
+`actor/kl_token_keep_ratio` (the latter describes the mask when KL is enabled).
+
+With the default `LOSS_AGG_MODE=token-mean`, each term is divided by its own mask's
+valid-position count **within each micro-batch**, then uses the existing gradient
+accumulation scaling. This preserves the previous reduction behavior; it is not
+a new global token-count reduction across micro-batches or distributed ranks.
+The adaptive KL controller still uses the all-token reward statistic. The default
+entropy regularization coefficient is zero; if explicitly enabled, entropy
+regularization retains the selected-position mask regardless of mask scope.
+`JS_TOKEN_FILTER_ENABLED=False` makes reward and KL both dense.
+
 ## Held-out evaluation
 
 Evaluate a Hugging Face-format model on AIME26 and the two HMMT sets:

@@ -112,6 +112,14 @@ js_token_selection_seed: 42
 # FKL is KL(pi_T || pi_T_ref); RKL is KL(pi_T_ref || pi_T)
 divergence_estimator: JSD
 
+# Ranking score: divergence (uses divergence_estimator), entropy (full student vocabulary),
+# or reward_magnitude (sum of absolute student-weighted teacher/reference log-ratios).
+token_selection_score: divergence
+
+# Which loss terms receive the selected-state mask: both, reward_only, kl_only.
+# The other term remains dense. Ignored when js_token_filter_enabled=false.
+token_mask_scope: both
+
 # Whether to use KL loss instead of KL reward penalty. True for GRPO
 use_kl_loss: false
 

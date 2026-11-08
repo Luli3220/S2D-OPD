@@ -48,9 +48,12 @@ __all__ = [
     "_build_pooled_batch_js_ladder_token_mask",
     "_build_random_fraction_token_mask",
     "_compute_delta_opd_rm_scores",
+    "_compute_token_selection_scores",
     "_compute_topk_divergence",
     "_compute_topk_js_divergence",
     "_derive_random_token_selection_seed",
+    "_get_token_selection_scores",
+    "_split_token_loss_masks",
 ]
 
 logger = logging.getLogger(__file__)
@@ -173,6 +176,68 @@ def _compute_topk_js_divergence(
         estimator="JSD",
         valid_mask=valid_mask,
     )
+
+
+def _compute_token_selection_scores(
+    score_type: str,
+    divergence: torch.Tensor,
+    rm_scores: torch.Tensor,
+    response_mask: torch.Tensor,
+    student_entropy: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Score rollout states without differentiating through the selector.
+
+    ``rm_scores`` already contains detached, normalized student probabilities
+    times teacher/reference log-ratios. Sum absolute contributions, not the
+    absolute value of their sum, to avoid cancelling opposing rewards.
+    Entropy is the full-vocabulary entropy from the existing student forward.
+    """
+    if score_type == "divergence":
+        scores = divergence
+    elif score_type == "entropy":
+        if student_entropy is None:
+            raise ValueError("Entropy selection requires full-vocabulary student entropys in the rollout batch")
+        scores = student_entropy
+    elif score_type == "reward_magnitude":
+        if rm_scores.ndim != 3 or rm_scores.shape[:2] != response_mask.shape:
+            raise ValueError("Reward-magnitude selection requires rm_scores with shape [B, T, K]")
+        scores = rm_scores.detach().float().abs().sum(dim=-1)
+    else:
+        raise ValueError(f"Unknown token_selection_score: {score_type!r}")
+    if scores.ndim != 2 or scores.shape != response_mask.shape:
+        raise ValueError("Token selection scores and response_mask must have the same [B, T] shape")
+    scores = scores.detach().float()
+    valid = response_mask.to(scores.device).bool()
+    if not torch.isfinite(scores[valid]).all():
+        raise ValueError(f"Non-finite {score_type} scores at valid response positions")
+    return scores.masked_fill(~valid, 0.0)
+
+
+def _get_token_selection_scores(batch, score_type: str) -> torch.Tensor:
+    """Keep legacy divergence-only batches usable; never silently fall back for new selectors."""
+    if "token_selection_scores" in batch.keys():
+        return batch["token_selection_scores"]
+    if score_type == "divergence" and "js_divergence" in batch.keys():
+        return batch["js_divergence"]
+    raise ValueError(f"Missing token_selection_scores for {score_type!r} selection")
+
+
+def _split_token_loss_masks(
+    response_mask: torch.Tensor,
+    selection_mask: torch.Tensor | None,
+    scope: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return independent reward/KL masks; filtering disabled means both are dense."""
+    if scope not in {"both", "reward_only", "kl_only"}:
+        raise ValueError(f"Unknown token_mask_scope: {scope!r}")
+    if selection_mask is None:
+        return response_mask, response_mask
+    if selection_mask.shape != response_mask.shape:
+        raise ValueError("selection_mask and response_mask must have the same shape")
+    selected = response_mask * selection_mask.to(device=response_mask.device, dtype=response_mask.dtype)
+    reward_mask = response_mask if scope == "kl_only" else selected
+    kl_mask = response_mask if scope == "reward_only" else selected
+    return reward_mask, kl_mask
 
 
 def _build_js_ladder_token_mask(
@@ -971,11 +1036,23 @@ class DataParallelPPOActor(BasePPOActor):
             estimator=self.config.divergence_estimator,
             valid_mask=valid_mask,
         )
+        score_type = self.config.get("token_selection_score", "divergence")
+        student_entropy = data.batch.get("entropys", None)
+        if student_entropy is not None:
+            student_entropy = student_entropy.to(device)
+        selection_scores = _compute_token_selection_scores(
+            score_type=score_type,
+            divergence=js_divergence,
+            rm_scores=rm_scores,
+            response_mask=data.batch["response_mask"],
+            student_entropy=student_entropy,
+        )
         return DataProto.from_dict(
             tensors={
                 "rm_scores": rm_scores,
                 "delta_log_ratio": delta_log_ratio,
                 "js_divergence": js_divergence,
+                "token_selection_scores": selection_scores,
             }
         )
 
@@ -1099,7 +1176,10 @@ class DataParallelPPOActor(BasePPOActor):
             raise ValueError("JS token filtering is enabled, but js_divergence is missing from the training batch")
         if js_token_filter_enabled:
             response_mask = data.batch["response_mask"]
-            js_divergence = data.batch["js_divergence"]
+            # Existing ranking helpers are score-agnostic despite their legacy JS names.
+            js_divergence = _get_token_selection_scores(
+                data.batch, self.config.get("token_selection_score", "divergence")
+            )
             selection_response_mask = response_mask.to(js_divergence.device)
             if js_token_selection_aggregation == "batch-agg" and "js_token_selection_mask" in data.batch.keys():
                 js_token_selection_mask = data.batch["js_token_selection_mask"].to(js_divergence.device).bool()
@@ -1220,6 +1300,8 @@ class DataParallelPPOActor(BasePPOActor):
         if js_token_filter_enabled:
             select_keys.append("js_divergence")
             select_keys.append("js_token_selection_mask")
+            if "token_selection_scores" in data.batch.keys():
+                select_keys.append("token_selection_scores")
         # Include pre-computed IS weights if present in batch
         # Weights are computed centrally in trainer and added to batch when algorithm.rollout_is=True
         if "rollout_is_weights" in data.batch.keys():
@@ -1284,6 +1366,7 @@ class DataParallelPPOActor(BasePPOActor):
                     old_log_prob = model_inputs["old_log_probs"]
                     advantages = model_inputs["advantages"]
                     loss_response_mask = response_mask
+                    js_token_mask = None
                     if js_token_filter_enabled:
                         js_divergence = model_inputs["js_divergence"]
                         js_token_mask = model_inputs["js_token_selection_mask"].bool()
@@ -1299,6 +1382,28 @@ class DataParallelPPOActor(BasePPOActor):
                         if selected_js.numel() > 0:
                             micro_batch_metrics["actor/js_selected_mean"] = selected_js.mean().detach().item()
                             micro_batch_metrics["actor/js_selected_min"] = selected_js.min().detach().item()
+                        selection_scores = _get_token_selection_scores(
+                            model_inputs, self.config.get("token_selection_score", "divergence")
+                        )
+                        if response_mask.bool().any():
+                            micro_batch_metrics["actor/selection_score_valid_mean"] = (
+                                selection_scores[response_mask.bool()].mean().item()
+                            )
+                        if js_token_mask.any():
+                            micro_batch_metrics["actor/selection_score_selected_mean"] = (
+                                selection_scores[js_token_mask].mean().item()
+                            )
+
+                    reward_response_mask, kl_response_mask = _split_token_loss_masks(
+                        response_mask, js_token_mask, self.config.get("token_mask_scope", "both")
+                    )
+                    valid_token_count = response_mask.sum().clamp_min(1)
+                    micro_batch_metrics["actor/reward_token_keep_ratio"] = (
+                        reward_response_mask.sum() / valid_token_count
+                    ).item()
+                    micro_batch_metrics["actor/kl_token_keep_ratio"] = (
+                        kl_response_mask.sum() / valid_token_count
+                    ).item()
 
                     entropy_coeff = self.config.entropy_coeff
                     loss_agg_mode = self.config.loss_agg_mode
@@ -1385,7 +1490,7 @@ class DataParallelPPOActor(BasePPOActor):
                         old_log_prob=old_log_prob,
                         log_prob=log_prob_for_loss,  # 3D for top-k, 2D otherwise
                         advantages=advantages,
-                        response_mask=loss_response_mask,
+                        response_mask=reward_response_mask,
                         loss_agg_mode=loss_agg_mode,
                         config=self.config,
                         rollout_is_weights=rollout_is_weights,
@@ -1411,7 +1516,7 @@ class DataParallelPPOActor(BasePPOActor):
                         kld = kl_penalty(
                             logprob=log_prob, ref_logprob=ref_log_prob, kl_penalty=self.config.kl_loss_type
                         )
-                        kl_loss = agg_loss(loss_mat=kld, loss_mask=loss_response_mask, loss_agg_mode=loss_agg_mode)
+                        kl_loss = agg_loss(loss_mat=kld, loss_mask=kl_response_mask, loss_agg_mode=loss_agg_mode)
 
                         policy_loss = policy_loss + kl_loss * effective_kl_loss_coef
                         micro_batch_metrics["actor/kl_loss"] = kl_loss.detach().item() * loss_scale_factor

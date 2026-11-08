@@ -36,7 +36,13 @@ LOG_ROOT=${LOG_ROOT:-logs}
 
 PROJECT_NAME=${PROJECT_NAME:-s2d-opd}
 JS_LADDER_SPLIT=${JS_LADDER_SPLIT:-90_100}
-EXPERIMENT_NAME=${EXPERIMENT_NAME:-justrl_qwen3_1p7b_js_${JS_LADDER_SPLIT}_kl}
+TOKEN_SELECTION_SCORE=${TOKEN_SELECTION_SCORE:-divergence}
+TOKEN_MASK_SCOPE=${TOKEN_MASK_SCOPE:-both}
+DEFAULT_EXPERIMENT_NAME=justrl_qwen3_1p7b_js_${JS_LADDER_SPLIT}_kl
+if [ "${TOKEN_SELECTION_SCORE}" != "divergence" ] || [ "${TOKEN_MASK_SCOPE}" != "both" ]; then
+  DEFAULT_EXPERIMENT_NAME=${DEFAULT_EXPERIMENT_NAME}_${TOKEN_SELECTION_SCORE}_${TOKEN_MASK_SCOPE}
+fi
+EXPERIMENT_NAME=${EXPERIMENT_NAME:-${DEFAULT_EXPERIMENT_NAME}}
 ACTOR_MODEL_PATH=${ACTOR_MODEL_PATH:-"${MODEL_ROOT}/Qwen3-1.7B"}
 REWARD_MODEL_PATH=${REWARD_MODEL_PATH:-"${MODEL_ROOT}/JustRL-DeepSeek-1.5B"}
 TEACHER_REF_MODEL_PATH=${TEACHER_REF_MODEL_PATH:-"${MODEL_ROOT}/DeepSeek-R1-Distill-Qwen-1.5B"}
@@ -175,6 +181,8 @@ set +e
   "actor_rollout_ref.actor.divergence_percentile_areas=${DIVERGENCE_PERCENTILE_AREAS}" \
   actor_rollout_ref.actor.js_token_selection_seed="${JS_TOKEN_SELECTION_SEED}" \
   actor_rollout_ref.actor.divergence_estimator="${DIVERGENCE_ESTIMATOR}" \
+  actor_rollout_ref.actor.token_selection_score="${TOKEN_SELECTION_SCORE}" \
+  actor_rollout_ref.actor.token_mask_scope="${TOKEN_MASK_SCOPE}" \
   actor_rollout_ref.actor.adaptive_kl_loss_reward_key="${ADAPTIVE_KL_LOSS_REWARD_KEY}" \
   actor_rollout_ref.actor.adaptive_kl_loss_eps="${ADAPTIVE_KL_LOSS_EPS}" \
   actor_rollout_ref.actor.adaptive_kl_loss_min_coef="${ADAPTIVE_KL_LOSS_MIN_COEF}" \
