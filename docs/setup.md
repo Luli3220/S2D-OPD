@@ -110,7 +110,7 @@ the existing top-10% per-response selection, and separate experiment directories
 
 The main launcher exposes two independent settings:
 
-- `TOKEN_SELECTION_SCORE=divergence|entropy|reward_magnitude` (default: `divergence`).
+- `TOKEN_SELECTION_SCORE=divergence|entropy|reward_magnitude|teachability` (default: `divergence`).
   Divergence continues to use `DIVERGENCE_ESTIMATOR=JSD|FKL|RKL`.
 - `TOKEN_MASK_SCOPE=both|reward_only|kl_only` (default: `both`).
   These options control **where masking applies**, not whether a loss term exists.
@@ -133,8 +133,9 @@ Absolute values are taken before summing, so positive and negative shifts do not
 cancel. Neither selector needs an extra model forward. Scores and masks are
 detached and fixed for the actor updates on that rollout batch.
 
-All ranking scopes, percentile intervals and absolute cutoffs apply to the chosen
-score. Thresholds therefore have score-specific units; the legacy `js_*` option
+For divergence, entropy and reward magnitude, all ranking scopes, percentile
+intervals and absolute cutoffs apply to the chosen score. Thresholds therefore
+have score-specific units; the legacy `js_*` option
 names are retained for compatibility. Random selection still ignores scores.
 `actor/js_*` score statistics remain teacher/reference divergence diagnostics;
 `actor/selection_score_*` reports the actual ranking signal. The reward and KL
@@ -149,6 +150,61 @@ The adaptive KL controller still uses the all-token reward statistic. The defaul
 entropy regularization coefficient is zero; if explicitly enabled, entropy
 regularization retains the selected-position mask regardless of mask scope.
 `JS_TOKEN_FILTER_ENABLED=False` makes reward and KL both dense.
+
+## TA selection + Direct-OPD
+
+```bash
+bash scripts/train_justrl_qwen_ta_top10.sh
+```
+
+The launcher keeps the existing JustRL teacher/reference pair, Direct-OPD reward,
+policy loss, anchor-KL term, adaptive KL controller and loss reduction. It replaces
+the position selector with the teachability score from
+[TA-OPD, Section 4](https://arxiv.org/abs/2605.26844). The default is top-16 candidate
+support and a 10% position budget; both are configurable:
+
+```bash
+LOG_PROB_TOP_K=32 JS_TOP_FRACTION=0.05 \
+bash scripts/train_justrl_qwen_ta_top10.sh
+```
+
+For each response position, the selector computes:
+
+- `D = KL(p_teacher_bar || p_student_bar)` on the **deduplicated union** of
+  student and RL-teacher top-k IDs, with both distributions renormalized on that union.
+- `C = sum(p_teacher(v) for v in student_topk)`, using full-vocabulary teacher
+  probabilities, without renormalizing the coverage mass.
+- `score = Norm(D) * Norm(C)`, where `Norm(z) = clip((z - Q05) / (Q95 - Q05 + 1e-8), 0, 1)`.
+
+Quantiles and the top-`ceil(rho * N)` mask are computed once over all valid
+positions in the **complete gathered rollout batch**. Padding and, when present,
+format-masked responses do not participate. Ties use the earlier flattened
+position; empty batches select nothing. This is `rollout-agg`, distinct from the
+existing per-response and PPO-mini-batch ranking scopes. Scores and masks stay
+detached and fixed throughout the actor updates for this rollout.
+
+This implementation uses exact cross-probabilities on the union, rather than
+filling missing top-k probabilities with epsilon. It adds one student scoring
+forward on RL-teacher top-k IDs. Teacher scoring is reused. The original student
+top-k IDs remain the reward/loss candidates, and the reference teacher continues
+to define the Direct-OPD log-ratio reward. The launcher applies the TA mask to
+both the reward-driven policy loss and anchor KL. Loss normalization is still
+the existing per-micro-batch reduction described above, not TA-OPD's full objective.
+
+The supported configuration is `reward_mode=delta_opd`, `TOP_K_STRATEGY=only_stu`,
+FSDP/FSDP2, and actor `ulysses_sequence_parallel_size=1` (the current default).
+The existing specified-ID scoring path does not shard target IDs for Ulysses;
+TA configuration rejects that combination explicitly. Direct use of the main
+launcher requires `TOKEN_SELECTION_SCORE=teachability`,
+`JS_TOKEN_SELECTION_AGGREGATION=rollout-agg`, and
+`JS_TOKEN_SELECTION_MODE=relative` (or `top_js`).
+
+`ta/disagreement_*`, `ta/compatibility_*`, `ta/score_*`, and
+`ta/selected_fraction` report rollout-wide selector statistics. Existing
+teacher/reference divergence diagnostics retain their original meaning.
+The experiment name includes the position budget and K by default. For matched
+selector comparisons, also match ranking scope/budget allocation: the existing
+JSD top-10% launcher selects per response, whereas TA selects over the rollout.
 
 ## Held-out evaluation
 

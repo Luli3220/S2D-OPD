@@ -79,14 +79,14 @@ class ActorConfig(BaseConfig):
         js_token_selection_mode (str): Token selection mode. Options: 'relative', 'absolute', 'ladder',
             'percentile_areas', 'random', plus compatible aliases 'top_js' and 'bottom_js'.
         js_token_selection_aggregation (str): Ranking scope. 'response-agg' ranks within each response;
-            'batch-agg' pools all valid states in each PPO mini-batch.
+            'batch-agg' pools each PPO mini-batch; 'rollout-agg' is required for TA selection.
         js_divergence_threshold (float): Absolute divergence cutoff for retaining valid response tokens.
         js_ladder_start_percent (float): Lower divergence-rank percentile for ladder selection.
         js_ladder_end_percent (float): Upper divergence-rank percentile for ladder selection.
         divergence_percentile_areas (list[list[float]]): Divergence-rank percentile areas to union.
         js_token_selection_seed (int): Base seed used by random token selection.
         divergence_estimator (str): Ranking divergence. Options: 'JSD', 'FKL', or 'RKL'.
-        token_selection_score (str): 'divergence', 'entropy', or 'reward_magnitude'.
+        token_selection_score (str): 'divergence', 'entropy', 'reward_magnitude', or 'teachability'.
         token_mask_scope (str): Apply selection to 'both', 'reward_only', or 'kl_only' loss terms.
         use_kl_loss (bool): Whether to use KL divergence loss.
         use_torch_compile (bool): Whether to use torch.compile for optimization.
@@ -196,7 +196,7 @@ class ActorConfig(BaseConfig):
                 "js_token_selection_mode must be one of "
                 f"{sorted(valid_js_token_selection_modes)}, got {self.js_token_selection_mode!r}"
             )
-        valid_js_token_selection_aggregations = {"batch-agg", "response-agg"}
+        valid_js_token_selection_aggregations = {"batch-agg", "response-agg", "rollout-agg"}
         if self.js_token_selection_aggregation not in valid_js_token_selection_aggregations:
             raise ValueError(
                 "js_token_selection_aggregation must be one of "
@@ -251,8 +251,15 @@ class ActorConfig(BaseConfig):
                 "divergence_estimator must be one of "
                 f"{sorted(valid_divergence_estimators)}, got {self.divergence_estimator!r}"
             )
-        if self.token_selection_score not in {"divergence", "entropy", "reward_magnitude"}:
+        if self.token_selection_score not in {"divergence", "entropy", "reward_magnitude", "teachability"}:
             raise ValueError(f"Invalid token_selection_score: {self.token_selection_score!r}")
+        if self.token_selection_score == "teachability":
+            if self.js_token_selection_aggregation != "rollout-agg":
+                raise ValueError("Teachability selection requires js_token_selection_aggregation='rollout-agg'")
+            if self.js_token_selection_mode not in {"relative", "top_js"}:
+                raise ValueError("Teachability selection requires js_token_selection_mode='relative' or 'top_js'")
+        elif self.js_token_selection_aggregation == "rollout-agg":
+            raise ValueError("rollout-agg is currently supported only for teachability selection")
         if self.token_mask_scope not in {"both", "reward_only", "kl_only"}:
             raise ValueError(f"Invalid token_mask_scope: {self.token_mask_scope!r}")
         if self.js_token_filter_enabled and self.token_mask_scope != "both" and not self.use_kl_loss:

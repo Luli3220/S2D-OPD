@@ -52,6 +52,7 @@ from verl.trainer.ppo.metric_utils import (
     process_validation_metrics,
 )
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
+from verl.trainer.ppo.teachability import build_teachability_selection
 from verl.trainer.ppo.utils import Role, WorkerType, need_critic, need_reference_policy, need_reward_model
 from verl.utils.checkpoint.checkpoint_manager import (
     find_latest_ckpt_path,
@@ -754,6 +755,22 @@ class RayPPOTrainer:
         self.reward_mode = self.direct_opd_options["reward_mode"]
         self.use_delta_opd = self.reward_mode == "delta_opd"
         self.use_delta_opd_sampled = self.reward_mode == "delta_opd_sampled"
+        self.use_ta_selection = self.config.actor_rollout_ref.actor.get("token_selection_score") == "teachability"
+        if self.use_ta_selection:
+            actor_config = self.config.actor_rollout_ref.actor
+            rollout_config = self.config.actor_rollout_ref.rollout
+            if not self.use_delta_opd:
+                raise ValueError("TA + Direct-OPD requires reward_mode='delta_opd'")
+            if rollout_config.get("top_k_strategy", "only_stu") != "only_stu":
+                raise ValueError("TA + Direct-OPD preserves the reward support: set top_k_strategy='only_stu'")
+            if rollout_config.get("log_prob_top_k", 0) <= 0:
+                raise ValueError("TA + Direct-OPD requires log_prob_top_k > 0")
+            if actor_config.strategy not in {"fsdp", "fsdp2"}:
+                raise ValueError("TA + Direct-OPD currently requires the FSDP actor")
+            # The existing specified-ID forward does not shard target IDs for
+            # Ulysses. Keep this path explicit instead of misaligning probabilities.
+            if int(actor_config.get("ulysses_sequence_parallel_size", 1)) != 1:
+                raise ValueError("TA specified-ID scoring currently requires ulysses_sequence_parallel_size=1")
         self.use_teacher_ref_scorer = self.use_delta_opd or self.use_delta_opd_sampled
         if self.use_teacher_ref_scorer and not self.use_rm:
             raise ValueError(f"reward_mode={self.reward_mode} requires the reward model role for teacher scoring")
@@ -1794,6 +1811,22 @@ class RayPPOTrainer:
                                         "overlap_mask"
                                     ]
                                 batch = batch.union(DataProto.from_dict(tensors=teacher_ref_tensors))
+
+                                if self.use_ta_selection:
+                                    # Cross-score RL-teacher top-k IDs without replacing
+                                    # the student top-k IDs used by Direct-OPD reward/loss.
+                                    with marked_timer("compute_ta_student_on_teacher", timing_raw, color="orange"):
+                                        ta_inputs = batch.select(
+                                            batch_keys=["responses", "input_ids", "attention_mask", "position_ids"],
+                                            non_tensor_batch_keys=["multi_modal_inputs"],
+                                            meta_info_keys=[],
+                                        )
+                                        ta_inputs.batch["target_ids"] = batch.batch["teacher_top_k_ids"]
+                                        ta_output = self.actor_rollout_wg.compute_log_probs_for_ids(ta_inputs)
+                                        batch.batch["student_log_probs_on_teacher_ids"] = ta_output.batch[
+                                            "student_log_probs_on_teacher_ids"
+                                        ]
+                                        del ta_inputs, ta_output
 
                                 with marked_timer("compute_delta_opd_reward", timing_raw, color="orange"):
                                     delta_output = self.actor_rollout_wg.compute_delta_opd_reward(batch)
@@ -2964,6 +2997,36 @@ class RayPPOTrainer:
                         with marked_timer("update_actor", timing_raw, color="red"):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
                             actor_config = self.config.actor_rollout_ref.actor
+                            if self.use_ta_selection:
+                                # These are gathered [B,T] tensors for the whole
+                                # rollout, not a worker shard or PPO mini-batch.
+                                with marked_timer("compute_ta_selection", timing_raw, color="orange"):
+                                    ta_valid = batch.batch["response_mask"].bool()
+                                    if "format_mask" in batch.batch.keys():
+                                        ta_valid = ta_valid & (
+                                            batch.batch["format_mask"].to(ta_valid.device).bool().unsqueeze(-1)
+                                        )
+                                    ta_scores, ta_mask = build_teachability_selection(
+                                        disagreement=batch.batch["ta_disagreement"],
+                                        compatibility=batch.batch["ta_compatibility"],
+                                        response_mask=ta_valid,
+                                        top_fraction=float(actor_config.js_top_fraction),
+                                    )
+                                    batch.batch["token_selection_scores"] = ta_scores
+                                    batch.batch["js_token_selection_mask"] = ta_mask
+                                    ta_valid = ta_valid.to(ta_scores.device)
+                                    for name, values in (
+                                        ("disagreement", batch.batch["ta_disagreement"]),
+                                        ("compatibility", batch.batch["ta_compatibility"]),
+                                        ("score", ta_scores),
+                                    ):
+                                        metrics[f"ta/{name}_mean"] = masked_mean(values, ta_valid).item()
+                                        metrics[f"ta/{name}_selected_mean"] = masked_mean(values, ta_mask).item()
+                                    metrics["ta/selected_fraction"] = (
+                                        ta_mask.sum() / ta_valid.sum().clamp_min(1)
+                                    ).item()
+                                    batch.batch.pop("ta_disagreement")
+                                    batch.batch.pop("ta_compatibility")
                             if actor_config.get("use_kl_loss", False) and actor_config.get(
                                 "adaptive_kl_loss_coef", False
                             ):
