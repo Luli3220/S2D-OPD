@@ -58,6 +58,12 @@ export PYTHON_BIN="$(command -v python)"
 
 See the [setup guide](docs/setup.md) for data preparation, paths, and launch options.
 
+For **TA selection + Direct-OPD**, run `bash scripts/train_justrl_qwen_ta_top10.sh`.
+This uses exact teacher/student union statistics and a rollout-wide 10% position
+budget while retaining the Direct-OPD reward and objective. See the
+[TA setup notes](docs/setup.md#ta-selection--direct-opd) for K/budget overrides
+and the additional student scoring forward.
+
 ## Repository layout
 
 ```text

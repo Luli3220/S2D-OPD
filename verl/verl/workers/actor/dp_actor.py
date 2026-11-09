@@ -30,6 +30,7 @@ from torch.distributed.tensor import DTensor
 import verl.utils.torch_functional as verl_F
 from verl import DataProto
 from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
+from verl.trainer.ppo.teachability import compute_teachability_statistics
 from verl.utils.attention_utils import index_first_axis, pad_input, rearrange, unpad_input
 from verl.utils.device import get_device_id, get_device_name
 from verl.utils.fsdp_utils import FSDPModule, fsdp2_clip_grad_norm_
@@ -1037,6 +1038,28 @@ class DataParallelPPOActor(BasePPOActor):
             valid_mask=valid_mask,
         )
         score_type = self.config.get("token_selection_score", "divergence")
+        if score_type == "teachability":
+            if strategy != "only_stu":
+                raise ValueError("TA + Direct-OPD requires top_k_strategy='only_stu'")
+            disagreement, compatibility = compute_teachability_statistics(
+                student_logp=student_logp,
+                teacher_on_student_logp=teacher_rl_logp,
+                teacher_logp=data.batch["teacher_top_k_log_probs"].to(device),
+                student_on_teacher_logp=data.batch["student_log_probs_on_teacher_ids"].to(device),
+                teacher_in_student_mask=data.batch["teacher_in_student_mask"].to(device),
+                response_mask=data.batch["response_mask"],
+            )
+            # Global quantiles and ranking must wait until all worker outputs
+            # have been gathered by the trainer. Reward computation is unchanged.
+            return DataProto.from_dict(
+                tensors={
+                    "rm_scores": rm_scores,
+                    "delta_log_ratio": delta_log_ratio,
+                    "js_divergence": js_divergence,
+                    "ta_disagreement": disagreement,
+                    "ta_compatibility": compatibility,
+                }
+            )
         student_entropy = data.batch.get("entropys", None)
         if student_entropy is not None:
             student_entropy = student_entropy.to(device)
@@ -1181,7 +1204,12 @@ class DataParallelPPOActor(BasePPOActor):
                 data.batch, self.config.get("token_selection_score", "divergence")
             )
             selection_response_mask = response_mask.to(js_divergence.device)
-            if js_token_selection_aggregation == "batch-agg" and "js_token_selection_mask" in data.batch.keys():
+            if js_token_selection_aggregation == "rollout-agg" and "js_token_selection_mask" not in data.batch.keys():
+                raise ValueError("Rollout-wide TA selection requires a precomputed mask from the trainer")
+            if (
+                js_token_selection_aggregation in {"batch-agg", "rollout-agg"}
+                and "js_token_selection_mask" in data.batch.keys()
+            ):
                 js_token_selection_mask = data.batch["js_token_selection_mask"].to(js_divergence.device).bool()
                 if js_token_selection_mask.shape != selection_response_mask.shape:
                     raise ValueError(

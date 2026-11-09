@@ -90,6 +90,7 @@ js_token_selection_mode: relative
 # Ranking scope for relative/top_js/bottom_js/ladder/percentile_areas modes.
 # response-agg ranks valid states independently per response (legacy behavior).
 # batch-agg pools all valid states in each PPO mini-batch, with no per-response quota.
+# rollout-agg normalizes and selects across the complete rollout batch (teachability only).
 js_token_selection_aggregation: response-agg
 
 # Absolute divergence cutoff; valid response tokens with divergence >= this value are retained
@@ -113,7 +114,9 @@ js_token_selection_seed: 42
 divergence_estimator: JSD
 
 # Ranking score: divergence (uses divergence_estimator), entropy (full student vocabulary),
-# or reward_magnitude (sum of absolute student-weighted teacher/reference log-ratios).
+# reward_magnitude (sum of absolute student-weighted teacher/reference log-ratios),
+# or teachability (RL-teacher/student union FKL times exact student-support coverage).
+# teachability requires rollout-agg and relative/top_js selection.
 token_selection_score: divergence
 
 # Which loss terms receive the selected-state mask: both, reward_only, kl_only.

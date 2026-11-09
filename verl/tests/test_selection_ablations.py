@@ -120,7 +120,8 @@ def test_reward_worker_exports_selection_scores_before_entropy_cleanup(monkeypat
 
 @pytest.mark.parametrize("scope", ["both", "reward_only", "kl_only"])
 @pytest.mark.parametrize("filter_enabled", [True, False])
-def test_real_actor_update_routes_and_normalizes_each_gradient(monkeypatch, scope, filter_enabled):
+@pytest.mark.parametrize("score_type", ["entropy", "teachability"])
+def test_real_actor_update_routes_and_normalizes_each_gradient(monkeypatch, scope, filter_enabled, score_type):
     monkeypatch.setattr(dp_actor, "get_device_id", lambda: "cpu")
     actor = object.__new__(DataParallelPPOActor)
     actor.config = actor_config(
@@ -128,8 +129,9 @@ def test_real_actor_update_routes_and_normalizes_each_gradient(monkeypatch, scop
         kl_loss_coef=0.7,
         js_token_filter_enabled=filter_enabled,
         token_mask_scope=scope,
-        token_selection_score="entropy",
-        js_top_fraction=0.1,
+        token_selection_score=score_type,
+        js_token_selection_aggregation="rollout-agg" if score_type == "teachability" else "response-agg",
+        js_top_fraction=0.4 if score_type == "teachability" else 0.1,
     )
     actor.actor_module = torch.nn.Module()
     reward_logits = torch.nn.Parameter(torch.full((2, 3, 2), -1.0))
@@ -165,6 +167,10 @@ def test_real_actor_update_routes_and_normalizes_each_gradient(monkeypatch, scop
         },
         meta_info={"temperature": 1.0},
     )
+    if score_type == "teachability":
+        # Local per-response re-ranking at 40% would keep three tokens, not two.
+        # The actor must consume the already dispatched rollout-wide mask.
+        data.batch["js_token_selection_mask"] = selection.bool()
     metrics = actor.update_policy(data)
     if not filter_enabled:
         selection = valid
@@ -188,6 +194,66 @@ def test_config_rejects_unknown_options(field, value):
 def test_one_term_masking_requires_an_anchor():
     with pytest.raises(ValueError, match="use_kl_loss"):
         actor_config(js_token_filter_enabled=True, token_mask_scope="reward_only")
+
+
+def test_teachability_worker_preserves_direct_opd_reward_and_divergence(monkeypatch):
+    monkeypatch.setattr(dp_actor, "get_device_id", lambda: "cpu")
+    actor = object.__new__(DataParallelPPOActor)
+    actor.config = actor_config()
+    data = DataProto.from_dict(
+        tensors={
+            "student_top_k_log_probs": torch.tensor([[[0.6, 0.3]]]).log(),
+            "teacher_on_student_log_probs": torch.tensor([[[0.1, 0.5]]]).log(),
+            "teacher_ref_on_student_log_probs": torch.tensor([[[0.2, 0.4]]]).log(),
+            "teacher_top_k_log_probs": torch.tensor([[[0.5, 0.3]]]).log(),
+            "student_log_probs_on_teacher_ids": torch.tensor([[[0.3, 0.08]]]).log(),
+            "teacher_in_student_mask": torch.tensor([[[True, False]]]),
+            "response_mask": torch.ones(1, 1),
+        },
+        meta_info={"top_k_strategy": "only_stu"},
+    )
+    baseline = actor.compute_delta_opd_reward(data)
+    actor.config = actor_config(token_selection_score="teachability", js_token_selection_aggregation="rollout-agg")
+    ta_output = actor.compute_delta_opd_reward(data)
+    for key in ("rm_scores", "delta_log_ratio", "js_divergence"):
+        torch.testing.assert_close(ta_output.batch[key], baseline.batch[key])
+    assert "token_selection_scores" not in ta_output.batch.keys()  # Normalize after gathering.
+    assert ta_output.batch["ta_disagreement"].item() > 0
+    assert ta_output.batch["ta_compatibility"].item() == pytest.approx(0.6)
+
+
+def test_teachability_actor_rejects_missing_global_mask():
+    actor = object.__new__(DataParallelPPOActor)
+    actor.actor_module = torch.nn.Module()
+    actor.config = actor_config(
+        token_selection_score="teachability", js_token_selection_aggregation="rollout-agg",
+        js_token_filter_enabled=True,
+    )
+    data = DataProto.from_dict(
+        tensors={
+            "response_mask": torch.ones(1, 2),
+            "js_divergence": torch.zeros(1, 2),
+            "token_selection_scores": torch.ones(1, 2),
+        }
+    )
+    with pytest.raises(ValueError, match="precomputed mask"):
+        actor.update_policy(data)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"js_token_selection_aggregation": "response-agg"},
+        {"js_token_selection_aggregation": "batch-agg"},
+        {"js_token_selection_mode": "random"},
+        {"js_token_selection_mode": "ladder"},
+    ],
+)
+def test_teachability_config_rejects_other_ranking_rules(overrides):
+    options = {"token_selection_score": "teachability", "js_token_selection_aggregation": "rollout-agg"}
+    options.update(overrides)
+    with pytest.raises(ValueError, match="Teachability selection requires"):
+        actor_config(**options)
 
 
 def test_hydra_defaults_match_dataclass_defaults():
