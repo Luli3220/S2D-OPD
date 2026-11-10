@@ -52,6 +52,7 @@ from verl.trainer.ppo.metric_utils import (
     process_validation_metrics,
 )
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
+from verl.trainer.ppo.jsd_support import collect_jsd_score_log_probs, resolve_jsd_score_top_k
 from verl.trainer.ppo.teachability import build_teachability_selection
 from verl.trainer.ppo.utils import Role, WorkerType, need_critic, need_reference_policy, need_reward_model
 from verl.utils.checkpoint.checkpoint_manager import (
@@ -755,6 +756,13 @@ class RayPPOTrainer:
         self.reward_mode = self.direct_opd_options["reward_mode"]
         self.use_delta_opd = self.reward_mode == "delta_opd"
         self.use_delta_opd_sampled = self.reward_mode == "delta_opd_sampled"
+        self.jsd_reward_top_k = int(self.config.actor_rollout_ref.rollout.get("log_prob_top_k", 0))
+        self.jsd_score_top_k = resolve_jsd_score_top_k(
+            self.config.actor_rollout_ref.actor,
+            self.jsd_reward_top_k,
+            self.reward_mode,
+            self.config.actor_rollout_ref.rollout.get("top_k_strategy", "only_stu"),
+        )
         self.use_ta_selection = self.config.actor_rollout_ref.actor.get("token_selection_score") == "teachability"
         if self.use_ta_selection:
             actor_config = self.config.actor_rollout_ref.actor
@@ -1828,9 +1836,26 @@ class RayPPOTrainer:
                                         ]
                                         del ta_inputs, ta_output
 
+                                if self.jsd_score_top_k > self.jsd_reward_top_k:
+                                    with marked_timer("compute_jsd_scoring_support", timing_raw, color="orange"):
+                                        jsd_scoring = collect_jsd_score_log_probs(
+                                            batch, self.actor_rollout_wg, self.rm_wg,
+                                            self.teacher_ref_rm_wg, self.jsd_score_top_k,
+                                        )
+                                        batch = batch.union(DataProto.from_dict(tensors=jsd_scoring))
+                                        del jsd_scoring
+                                if self.config.actor_rollout_ref.actor.get("jsd_score_top_k", None) is not None:
+                                    metrics["jsd_support/reward_k"] = self.jsd_reward_top_k
+                                    metrics["jsd_support/score_k"] = self.jsd_score_top_k
+                                    metrics["jsd_support/extra_scoring_pass"] = int(
+                                        self.jsd_score_top_k > self.jsd_reward_top_k
+                                    )
                                 with marked_timer("compute_delta_opd_reward", timing_raw, color="orange"):
                                     delta_output = self.actor_rollout_wg.compute_delta_opd_reward(batch)
                                     batch = batch.union(delta_output)
+                                for key in ("jsd_score_teacher_log_probs", "jsd_score_reference_log_probs"):
+                                    if key in batch.batch.keys():
+                                        batch.batch.pop(key)
 
                                 response_mask = batch.batch["response_mask"]
                                 metrics.update(

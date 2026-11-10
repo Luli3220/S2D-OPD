@@ -113,6 +113,10 @@ js_token_selection_seed: 42
 # FKL is KL(pi_T || pi_T_ref); RKL is KL(pi_T_ref || pi_T)
 divergence_estimator: JSD
 
+# Optional independent JSD scoring support; null reuses the Direct-OPD reward support.
+# Numeric overrides require JSD/divergence selection, filtering, delta_opd, only_stu and FSDP.
+jsd_score_top_k: null
+
 # Ranking score: divergence (uses divergence_estimator), entropy (full student vocabulary),
 # reward_magnitude (sum of absolute student-weighted teacher/reference log-ratios),
 # or teachability (RL-teacher/student union FKL times exact student-support coverage).

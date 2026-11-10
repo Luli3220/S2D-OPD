@@ -1002,6 +1002,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         data.meta_info["use_dynamic_bsz"] = self.config.rollout.log_prob_use_dynamic_bsz
         data.meta_info["temperature"] = self.config.rollout.temperature
         data.meta_info["top_k"] = self.config.rollout.get("log_prob_top_k", 0)
+        score_override = data.meta_info.pop("jsd_score_top_k_override", None)
+        if score_override is not None:
+            configured = self.config.actor.get("jsd_score_top_k", None)
+            if score_override != configured or score_override <= data.meta_info["top_k"]:
+                raise ValueError("JSD scoring override must match the configured larger scoring support")
+            data.meta_info["top_k"] = score_override
         # data.meta_info["top_p"] = 1.0
         # print("log_prob_top_k", data.meta_info["top_k"])
         # perform recompute log_prob

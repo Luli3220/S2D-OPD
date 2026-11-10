@@ -1,8 +1,9 @@
 # Fixed-rollout JSD support audit
 
 This independent diagnostic answers how JSD resolution changes selection masks.
-It does **not** train a model, change Direct-OPD reward candidates, or modify any
-existing training/evaluation entry point. All code and output live here.
+The offline `run.sh` pipeline does **not** train a model or change Direct-OPD
+reward candidates. Its code and output live here. A separate `train.sh` launcher
+below runs the representative training ablation using independent scoring support.
 
 ## Protocol
 
@@ -119,3 +120,54 @@ python experiments/jsd_support/audit.py summarize --help
 `summarize` needs only NumPy and Python; it can be rerun locally on downloaded
 bank + score shards. Supply `--bank /new/location/bank.jsonl` after relocating
 results; the checksum is still verified. Never edit the bank or its checksum.
+
+## Training check: reward K=16, scoring K=8 or 64
+
+Use the same JustRL/Qwen3-1.7B models, processed training data, seed and training
+settings as the existing K=16 baseline. Set the existing training variables to
+their actual locations. Note that `ACTOR_MODEL_PATH` is the training variable;
+the offline tool instead uses `STUDENT_MODEL_PATH`.
+
+```bash
+export PYTHON_BIN="$(command -v python)"
+export ACTOR_MODEL_PATH="/path/to/Qwen3-1.7B"
+export REWARD_MODEL_PATH="/path/to/JustRL-DeepSeek-1.5B"
+export TEACHER_REF_MODEL_PATH="/path/to/DeepSeek-R1-Distill-Qwen-1.5B"
+export TRAIN_DATASET="/path/to/processed/skywork-or1-math-dapo-original.parquet"
+export VAL_BEFORE_TRAIN=False
+
+bash experiments/jsd_support/train.sh 8
+bash experiments/jsd_support/train.sh 64
+```
+
+These are two full training runs using the existing default 8-GPU launcher and
+separate experiment names/checkpoint/log directories. Reward/update top-k stays
+at **16**. JSD ranks positions within each response, retains the highest **10%**,
+and masks **both** reward and anchor KL. Other hyperparameters, validation and
+checkpoint cadence, and adaptive KL use the original JustRL launcher defaults/
+environment; preserve the matched baseline's settings and actual seed setup.
+The launcher does not invent a new seed mechanism. The commands are sequential;
+parallel jobs need separate resources and isolated Ray runtimes as for existing runs.
+
+Main option: `JSD_SCORE_TOP_K` maps to `actor.jsd_score_top_k`. The default
+**null** preserves existing behavior. Numeric overrides require FSDP/FSDP2
+Direct-OPD (`delta_opd`, `only_stu`), the JSD divergence selector and filtering.
+
+- Scoring K <= reward K slices the existing sorted student candidate support and
+  teacher/reference log-probs, without additional model forwards.
+- Scoring K > reward K uses a separate batch for three additional **no-grad**
+  student/teacher/reference forwards on the same sampled states. Only the two
+  teacher-side scoring tensors enter JSD computation; they are freed before
+  actor updates. Original reward IDs, weights, reward tensors, candidate metrics,
+  and the adaptive-KL reward statistic remain on top-16. In particular, reward
+  IDs are not replaced by a prefix of top-64: different `topk` calls may resolve
+  bf16 ties differently.
+
+Training preserves the existing parameter dtype and bf16 autocast, unlike the
+offline fp32 diagnostic. K=64 costs extra forward time and candidate buffers but
+does not retain full-vocabulary scoring distributions across the rollout.
+
+Check `jsd_support/reward_k=16`, `jsd_support/score_k=8` or `64`, and
+`jsd_support/extra_scoring_pass=0` or `1`. Reward/KL keep ratios should both be
+approximately 0.10, allowing per-response rounding. `train.sh 16` is also
+available as a matched control and performs no additional scoring.

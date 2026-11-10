@@ -30,6 +30,7 @@ from torch.distributed.tensor import DTensor
 import verl.utils.torch_functional as verl_F
 from verl import DataProto
 from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
+from verl.trainer.ppo.jsd_support import select_jsd_log_probs
 from verl.trainer.ppo.teachability import compute_teachability_statistics
 from verl.utils.attention_utils import index_first_axis, pad_input, rearrange, unpad_input
 from verl.utils.device import get_device_id, get_device_name
@@ -1031,9 +1032,13 @@ class DataParallelPPOActor(BasePPOActor):
             teacher_ref_logp=teacher_ref_logp,
             valid_mask=valid_mask,
         )
+        scoring_k = self.config.get("jsd_score_top_k", None)
+        if scoring_k is not None and strategy != "only_stu":
+            raise ValueError("Independent JSD scoring support requires top_k_strategy='only_stu'")
+        jsd_teacher, jsd_reference = select_jsd_log_probs(data.batch, scoring_k)
         js_divergence = _compute_topk_divergence(
-            pi_t_logp=teacher_rl_logp,
-            pi_t_ref_logp=teacher_ref_logp,
+            pi_t_logp=jsd_teacher.to(device),
+            pi_t_ref_logp=jsd_reference.to(device),
             estimator=self.config.divergence_estimator,
             valid_mask=valid_mask,
         )

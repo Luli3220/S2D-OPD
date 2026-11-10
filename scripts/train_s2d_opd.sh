@@ -65,6 +65,8 @@ TEACHER_TEMPERATURE=${TEACHER_TEMPERATURE:-1.0}
 REPETITION_PENALTY=${REPETITION_PENALTY:-1.0}
 N_RESPONSES=${N_RESPONSES:-4}
 LOG_PROB_TOP_K=${LOG_PROB_TOP_K:-16}
+# null preserves the original coupled support. A numeric value changes only JSD scoring.
+JSD_SCORE_TOP_K=${JSD_SCORE_TOP_K:-null}
 TOP_K_STRATEGY=${TOP_K_STRATEGY:-only_stu}
 REWARD_WEIGHT_MODE=${REWARD_WEIGHT_MODE:-student_p}
 KL_LOSS_COEF=${KL_LOSS_COEF:-2.5}
@@ -181,6 +183,7 @@ set +e
   "actor_rollout_ref.actor.divergence_percentile_areas=${DIVERGENCE_PERCENTILE_AREAS}" \
   actor_rollout_ref.actor.js_token_selection_seed="${JS_TOKEN_SELECTION_SEED}" \
   actor_rollout_ref.actor.divergence_estimator="${DIVERGENCE_ESTIMATOR}" \
+  actor_rollout_ref.actor.jsd_score_top_k="${JSD_SCORE_TOP_K}" \
   actor_rollout_ref.actor.token_selection_score="${TOKEN_SELECTION_SCORE}" \
   actor_rollout_ref.actor.token_mask_scope="${TOKEN_MASK_SCOPE}" \
   actor_rollout_ref.actor.adaptive_kl_loss_reward_key="${ADAPTIVE_KL_LOSS_REWARD_KEY}" \

@@ -196,6 +196,45 @@ def test_one_term_masking_requires_an_anchor():
         actor_config(js_token_filter_enabled=True, token_mask_scope="reward_only")
 
 
+@pytest.mark.parametrize("score_k", [8, 16, 64])
+def test_jsd_support_changes_only_selector_scores_not_direct_opd_rewards(monkeypatch, score_k):
+    monkeypatch.setattr(dp_actor, "get_device_id", lambda: "cpu")
+    generator = torch.Generator().manual_seed(31)
+    probabilities = [torch.randn(2, 5, 64, generator=generator).log_softmax(-1) for _ in range(3)]
+    student, teacher, reference = probabilities
+    student_logp, ids = student.topk(16, dim=-1)
+    data = DataProto.from_dict(
+        tensors={
+            "student_top_k_log_probs": student_logp,
+            "teacher_on_student_log_probs": teacher.gather(-1, ids),
+            "teacher_ref_on_student_log_probs": reference.gather(-1, ids),
+            "response_mask": torch.ones(2, 5),
+        },
+        meta_info={"top_k_strategy": "only_stu"},
+    )
+    actor = object.__new__(DataParallelPPOActor)
+    actor.config = actor_config(js_token_filter_enabled=True)
+    baseline = actor.compute_delta_opd_reward(data)
+    if score_k > 16:
+        score_ids = student.topk(score_k, dim=-1).indices
+        data.batch["jsd_score_teacher_log_probs"] = teacher.gather(-1, score_ids)
+        data.batch["jsd_score_reference_log_probs"] = reference.gather(-1, score_ids)
+        expected_teacher = data.batch["jsd_score_teacher_log_probs"]
+        expected_reference = data.batch["jsd_score_reference_log_probs"]
+    else:
+        expected_teacher = data.batch["teacher_on_student_log_probs"][..., :score_k]
+        expected_reference = data.batch["teacher_ref_on_student_log_probs"][..., :score_k]
+    actor.config = actor_config(js_token_filter_enabled=True, jsd_score_top_k=score_k)
+    changed = actor.compute_delta_opd_reward(data)
+    for key in ("rm_scores", "delta_log_ratio"):
+        torch.testing.assert_close(changed.batch[key], baseline.batch[key], rtol=0, atol=0)
+        assert changed.batch[key].shape[-1] == 16
+    expected = dp_actor._compute_topk_divergence(expected_teacher, expected_reference, "JSD")
+    torch.testing.assert_close(changed.batch["token_selection_scores"], expected)
+    if score_k == 16:
+        torch.testing.assert_close(changed.batch["js_divergence"], baseline.batch["js_divergence"], rtol=0, atol=0)
+
+
 def test_teachability_worker_preserves_direct_opd_reward_and_divergence(monkeypatch):
     monkeypatch.setattr(dp_actor, "get_device_id", lambda: "cpu")
     actor = object.__new__(DataParallelPPOActor)
