@@ -196,6 +196,92 @@ def test_one_term_masking_requires_an_anchor():
         actor_config(js_token_filter_enabled=True, token_mask_scope="reward_only")
 
 
+def test_opd2_gate_uses_centered_signs_and_preserves_original_controller_reward(monkeypatch):
+    monkeypatch.setattr(dp_actor, "get_device_id", lambda: "cpu")
+    student = torch.tensor([[[0.5, 0.3, 0.2]]]).log()
+    teacher = torch.tensor([[[0.4, 0.4, 0.2]]]).log()
+    reference = torch.tensor([[[0.2, 0.2, 0.6]]]).log()
+    probabilities = student.exp()
+    data = DataProto.from_dict(tensors={
+        "student_top_k_log_probs": student,
+        "teacher_on_student_log_probs": teacher,
+        "teacher_ref_on_student_log_probs": reference,
+        "response_mask": torch.ones(1, 1),
+        "opd2_delta_baseline": (probabilities * (teacher - reference)).sum(-1),
+        "opd2_opd_baseline": (probabilities * (teacher - student)).sum(-1),
+    }, meta_info={"top_k_strategy": "only_stu"})
+    actor = object.__new__(DataParallelPPOActor)
+    actor.config = actor_config()
+    baseline = actor.compute_delta_opd_reward(data)
+    actor.config = actor_config(opd2_enabled=True, opd2_center_top_k=3)
+    result = actor.compute_delta_opd_reward(data)
+    torch.testing.assert_close(result.batch["opd2_ungated_rm_scores"], baseline.batch["rm_scores"], rtol=0, atol=0)
+    assert result.batch["opd2_candidate_gate"].tolist() == [[[False, True, False]]]
+    expected = baseline.batch["rm_scores"].masked_fill(~result.batch["opd2_candidate_gate"], 0)
+    torch.testing.assert_close(result.batch["rm_scores"], expected, rtol=0, atol=0)
+    assert result.batch["rm_scores"][0, 0, 1] > 0
+    assert result.batch["rm_scores"][0, 0, 0] == result.batch["rm_scores"][0, 0, 2] == 0
+
+
+def test_opd2_gate_stops_at_student_teacher_equality():
+    from verl.trainer.ppo.opd2 import compute_opd2_candidate_gate
+
+    student = torch.tensor([[[0.7, 0.3]]]).log()
+    reference = torch.tensor([[[0.2, 0.8]]]).log()
+    gate = compute_opd2_candidate_gate(
+        student, student, reference, torch.zeros(1, 1), torch.zeros(1, 1), torch.ones(1, 1)
+    )
+    assert not gate.any()
+
+
+def test_opd2_centering_does_not_renormalize_truncated_student_probabilities():
+    from verl.trainer.ppo.opd2 import student_weighted_expectation
+
+    student = torch.tensor([[[0.3, 0.2]]]).log()
+    target = torch.tensor([[[-2.0, -3.0]]])
+    mean = student_weighted_expectation(student, target, torch.ones(1, 1))
+    torch.testing.assert_close(mean, torch.tensor([[-1.2]]))
+
+
+@pytest.mark.parametrize("score_k", [8, 16, 64])
+def test_jsd_support_changes_only_selector_scores_not_direct_opd_rewards(monkeypatch, score_k):
+    monkeypatch.setattr(dp_actor, "get_device_id", lambda: "cpu")
+    generator = torch.Generator().manual_seed(31)
+    probabilities = [torch.randn(2, 5, 64, generator=generator).log_softmax(-1) for _ in range(3)]
+    student, teacher, reference = probabilities
+    student_logp, ids = student.topk(16, dim=-1)
+    data = DataProto.from_dict(
+        tensors={
+            "student_top_k_log_probs": student_logp,
+            "teacher_on_student_log_probs": teacher.gather(-1, ids),
+            "teacher_ref_on_student_log_probs": reference.gather(-1, ids),
+            "response_mask": torch.ones(2, 5),
+        },
+        meta_info={"top_k_strategy": "only_stu"},
+    )
+    actor = object.__new__(DataParallelPPOActor)
+    actor.config = actor_config(js_token_filter_enabled=True)
+    baseline = actor.compute_delta_opd_reward(data)
+    if score_k > 16:
+        score_ids = student.topk(score_k, dim=-1).indices
+        data.batch["jsd_score_teacher_log_probs"] = teacher.gather(-1, score_ids)
+        data.batch["jsd_score_reference_log_probs"] = reference.gather(-1, score_ids)
+        expected_teacher = data.batch["jsd_score_teacher_log_probs"]
+        expected_reference = data.batch["jsd_score_reference_log_probs"]
+    else:
+        expected_teacher = data.batch["teacher_on_student_log_probs"][..., :score_k]
+        expected_reference = data.batch["teacher_ref_on_student_log_probs"][..., :score_k]
+    actor.config = actor_config(js_token_filter_enabled=True, jsd_score_top_k=score_k)
+    changed = actor.compute_delta_opd_reward(data)
+    for key in ("rm_scores", "delta_log_ratio"):
+        torch.testing.assert_close(changed.batch[key], baseline.batch[key], rtol=0, atol=0)
+        assert changed.batch[key].shape[-1] == 16
+    expected = dp_actor._compute_topk_divergence(expected_teacher, expected_reference, "JSD")
+    torch.testing.assert_close(changed.batch["token_selection_scores"], expected)
+    if score_k == 16:
+        torch.testing.assert_close(changed.batch["js_divergence"], baseline.batch["js_divergence"], rtol=0, atol=0)
+
+
 def test_teachability_worker_preserves_direct_opd_reward_and_divergence(monkeypatch):
     monkeypatch.setattr(dp_actor, "get_device_id", lambda: "cpu")
     actor = object.__new__(DataParallelPPOActor)

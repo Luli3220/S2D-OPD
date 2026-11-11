@@ -30,6 +30,8 @@ from torch.distributed.tensor import DTensor
 import verl.utils.torch_functional as verl_F
 from verl import DataProto
 from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
+from verl.trainer.ppo.jsd_support import select_jsd_log_probs
+from verl.trainer.ppo.opd2 import compute_opd2_candidate_gate
 from verl.trainer.ppo.teachability import compute_teachability_statistics
 from verl.utils.attention_utils import index_first_axis, pad_input, rearrange, unpad_input
 from verl.utils.device import get_device_id, get_device_name
@@ -1031,13 +1033,30 @@ class DataParallelPPOActor(BasePPOActor):
             teacher_ref_logp=teacher_ref_logp,
             valid_mask=valid_mask,
         )
+        scoring_k = self.config.get("jsd_score_top_k", None)
+        if scoring_k is not None and strategy != "only_stu":
+            raise ValueError("Independent JSD scoring support requires top_k_strategy='only_stu'")
+        jsd_teacher, jsd_reference = select_jsd_log_probs(data.batch, scoring_k)
         js_divergence = _compute_topk_divergence(
-            pi_t_logp=teacher_rl_logp,
-            pi_t_ref_logp=teacher_ref_logp,
+            pi_t_logp=jsd_teacher.to(device),
+            pi_t_ref_logp=jsd_reference.to(device),
             estimator=self.config.divergence_estimator,
             valid_mask=valid_mask,
         )
         score_type = self.config.get("token_selection_score", "divergence")
+        if self.config.get("opd2_enabled", False):
+            gate = compute_opd2_candidate_gate(
+                student_logp, teacher_rl_logp, teacher_ref_logp,
+                data.batch["opd2_delta_baseline"], data.batch["opd2_opd_baseline"], data.batch["response_mask"],
+            )
+            # Pure gate comparison: retain the exact original reward values,
+            # including their dtype. Centering affects the decision only.
+            gated_scores = rm_scores.masked_fill(~gate, 0)
+            return DataProto.from_dict(tensors={
+                "rm_scores": gated_scores, "opd2_ungated_rm_scores": rm_scores,
+                "opd2_candidate_gate": gate, "delta_log_ratio": delta_log_ratio,
+                "js_divergence": js_divergence, "token_selection_scores": js_divergence,
+            })
         if score_type == "teachability":
             if strategy != "only_stu":
                 raise ValueError("TA + Direct-OPD requires top_k_strategy='only_stu'")

@@ -132,6 +132,9 @@ class ActorConfig(BaseConfig):
     divergence_percentile_areas: list[list[float]] = field(default_factory=list)
     js_token_selection_seed: int = 42
     divergence_estimator: str = "JSD"
+    jsd_score_top_k: Optional[int] = None
+    opd2_enabled: bool = False
+    opd2_center_top_k: int = 1024
     token_selection_score: str = "divergence"
     token_mask_scope: str = "both"
     use_kl_loss: bool = False
@@ -251,6 +254,20 @@ class ActorConfig(BaseConfig):
                 "divergence_estimator must be one of "
                 f"{sorted(valid_divergence_estimators)}, got {self.divergence_estimator!r}"
             )
+        if self.opd2_enabled:
+            if type(self.opd2_center_top_k) is not int or self.opd2_center_top_k <= 0:
+                raise ValueError("opd2_center_top_k must be a positive integer")
+            if self.js_token_filter_enabled or self.jsd_score_top_k is not None:
+                raise ValueError("OPD2 gating cannot be combined with position filtering or JSD support overrides")
+            if self.token_selection_score != "divergence":
+                raise ValueError("OPD2 gating cannot be combined with another selector")
+        if self.jsd_score_top_k is not None:
+            if type(self.jsd_score_top_k) is not int or self.jsd_score_top_k <= 0:
+                raise ValueError("jsd_score_top_k must be a positive integer or null")
+            if not self.js_token_filter_enabled or self.token_selection_score != "divergence":
+                raise ValueError("jsd_score_top_k requires filtering with the divergence selector")
+            if self.divergence_estimator != "JSD":
+                raise ValueError("jsd_score_top_k requires divergence_estimator='JSD'")
         if self.token_selection_score not in {"divergence", "entropy", "reward_magnitude", "teachability"}:
             raise ValueError(f"Invalid token_selection_score: {self.token_selection_score!r}")
         if self.token_selection_score == "teachability":
