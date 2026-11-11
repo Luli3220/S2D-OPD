@@ -114,12 +114,13 @@ def collect_opd2_centering(batch, actor_worker, teacher_worker, reference_worker
             "opd2_center_mass": mass}
 
 
-def compute_opd2_candidate_rewards(student_logp, teacher_logp, reference_logp,
-                                   delta_baseline, opd_baseline, response_mask):
-    """Center both signals, gate each original candidate, retain Direct-OPD weights.
+def compute_opd2_candidate_gate(student_logp, teacher_logp, reference_logp,
+                               delta_baseline, opd_baseline, response_mask):
+    """Use centered signals only to decide the gate; do not construct rewards.
 
     Uses the paper's strict product > 0 condition; a zero OPD advantage stops the
-    delta update. No ranking, fixed retention ratio, or retained-count reduction.
+    delta update. The caller masks its original Direct-OPD reward tensor, keeping
+    every retained value/dtype unchanged. No ranking or retained-count reduction.
     """
     import torch
 
@@ -141,5 +142,4 @@ def compute_opd2_candidate_rewards(student_logp, teacher_logp, reference_logp,
         delta = (teacher - reference) - delta_mean.unsqueeze(-1)
         opd = (teacher - student) - opd_mean.unsqueeze(-1)
         gate = ((delta * opd) > 0) & valid
-        rewards = torch.softmax(student, dim=-1) * torch.where(gate, delta, torch.zeros_like(delta))
-    return rewards.detach(), gate.detach()
+    return gate.detach()

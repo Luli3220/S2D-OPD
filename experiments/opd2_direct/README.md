@@ -1,9 +1,11 @@
-# OPD2-style centering and joint gating + Direct-OPD
+# OPD2-style gate-only comparison + Direct-OPD
 
-This experiment transfers the centering and joint-condition mechanism from
+This experiment transfers the centered joint-condition **gate** from
 [On-Policy Delta Distillation, Section 2.3](https://arxiv.org/abs/2607.15161)
 to the existing Direct-OPD candidate update. Report it as **OPD2-style gating +
-Direct-OPD**, not as a full reproduction of sampled-token OPD2.
+Direct-OPD (gate only)**, not as a full reproduction of sampled-token OPD2.
+Centering is used only to construct the boolean gate. It does not change reward
+magnitudes: each surviving candidate keeps its exact original Direct-OPD reward.
 
 ## Gate definition
 
@@ -37,8 +39,13 @@ The Direct-OPD reward/update support remains the original student top-16:
 
 ```
 reward_weight(v) = softmax(student_logp_on_top16)[v]
-update_signal(v) = reward_weight(v) * A_delta(v) * gate(v)
+update_signal(v) = reward_weight(v) * delta(v) * gate(v)
 ```
+
+In code, we mask the existing reward tensor directly, preserving its original
+values and dtype at retained entries; we do not recompute its weights. The
+paper's centered A_delta magnitude is intentionally not substituted into the
+update, so this comparison isolates gating rather than also changing rewards.
 
 The centering support is used only for expectations. It does not replace the
 top-16 reward candidates. No top-10% position selector is applied and there is
@@ -56,7 +63,9 @@ positions, rather than dividing by the number of retained candidates.
   the adaptive-KL rule. Its `delta_opd/weighted_reward_mean` input is deliberately
   computed from the **ungated original top-16 reward**, so changing the gate does
   not also change the controller's input definition.
-- Retain our top-16 probability-weighted update and reward scale. The paper
+- Retain our raw top-16 probability-weighted delta update and reward scale. The paper
+  applies centered A_delta magnitudes to the loss; here they only decide the gate.
+  The paper also
   updates only sampled tokens, disables anchor KL, uses temperature 0.7, and
   scales rewards by 0.1; these settings are **not** copied into this controlled
   mechanism-transfer experiment. Current-student probabilities, not initial

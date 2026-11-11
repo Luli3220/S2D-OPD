@@ -14,6 +14,6 @@ export TOKEN_MASK_SCOPE=both
 export JS_TOKEN_FILTER_ENABLED=False
 export USE_KL_LOSS=True
 export ADAPTIVE_KL_LOSS_COEF=True
-export EXPERIMENT_NAME=${EXPERIMENT_NAME:-justrl_qwen3_1p7b_opd2_gate_direct_k16_center1024}
+export EXPERIMENT_NAME=${EXPERIMENT_NAME:-justrl_qwen3_1p7b_opd2_gateonly_direct_k16_center1024}
 
 exec bash "${REPO_ROOT}/scripts/train_s2d_opd.sh"

@@ -217,19 +217,21 @@ def test_opd2_gate_uses_centered_signs_and_preserves_original_controller_reward(
     result = actor.compute_delta_opd_reward(data)
     torch.testing.assert_close(result.batch["opd2_ungated_rm_scores"], baseline.batch["rm_scores"], rtol=0, atol=0)
     assert result.batch["opd2_candidate_gate"].tolist() == [[[False, True, False]]]
+    expected = baseline.batch["rm_scores"].masked_fill(~result.batch["opd2_candidate_gate"], 0)
+    torch.testing.assert_close(result.batch["rm_scores"], expected, rtol=0, atol=0)
     assert result.batch["rm_scores"][0, 0, 1] > 0
     assert result.batch["rm_scores"][0, 0, 0] == result.batch["rm_scores"][0, 0, 2] == 0
 
 
 def test_opd2_gate_stops_at_student_teacher_equality():
-    from verl.trainer.ppo.opd2 import compute_opd2_candidate_rewards
+    from verl.trainer.ppo.opd2 import compute_opd2_candidate_gate
 
     student = torch.tensor([[[0.7, 0.3]]]).log()
     reference = torch.tensor([[[0.2, 0.8]]]).log()
-    rewards, gate = compute_opd2_candidate_rewards(
+    gate = compute_opd2_candidate_gate(
         student, student, reference, torch.zeros(1, 1), torch.zeros(1, 1), torch.ones(1, 1)
     )
-    assert rewards.eq(0).all() and not gate.any()
+    assert not gate.any()
 
 
 def test_opd2_centering_does_not_renormalize_truncated_student_probabilities():

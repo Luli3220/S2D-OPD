@@ -216,7 +216,9 @@ Run `bash experiments/jsd_support/train.sh 8` or `64`. These set the independent
 ## OPD2-style gating + Direct-OPD
 
 Run `bash experiments/opd2_direct/train.sh` to transfer the centered-sign-agreement
-mechanism to our top-16 Direct-OPD update. See [the experiment notes](../experiments/opd2_direct/README.md)
+gate to our top-16 Direct-OPD update. Centering determines the gate only; surviving
+reward values remain exactly the original raw Direct-OPD rewards.
+See [the experiment notes](../experiments/opd2_direct/README.md)
 for exact centering, variable candidate retention, dense anchor KL and differences
 from the paper's sampled-token objective. This mode must not be combined with
 JSD/entropy/TA position selection.
