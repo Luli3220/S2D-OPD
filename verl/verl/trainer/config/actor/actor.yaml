@@ -117,6 +117,11 @@ divergence_estimator: JSD
 # Numeric overrides require JSD/divergence selection, filtering, delta_opd, only_stu and FSDP.
 jsd_score_top_k: null
 
+# OPD2-style centered candidate agreement gate, adapted to the Direct-OPD objective.
+# Position filtering must be disabled; the existing anchor KL stays dense.
+opd2_enabled: false
+opd2_center_top_k: 1024
+
 # Ranking score: divergence (uses divergence_estimator), entropy (full student vocabulary),
 # reward_magnitude (sum of absolute student-weighted teacher/reference log-ratios),
 # or teachability (RL-teacher/student union FKL times exact student-support coverage).

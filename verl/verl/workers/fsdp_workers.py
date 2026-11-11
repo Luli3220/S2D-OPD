@@ -1003,6 +1003,13 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         data.meta_info["temperature"] = self.config.rollout.temperature
         data.meta_info["top_k"] = self.config.rollout.get("log_prob_top_k", 0)
         score_override = data.meta_info.pop("jsd_score_top_k_override", None)
+        opd2_override = data.meta_info.pop("opd2_center_top_k_override", None)
+        if opd2_override is not None:
+            if score_override is not None or not self.config.actor.get("opd2_enabled", False):
+                raise ValueError("OPD2 centering override requires its dedicated gating mode")
+            if opd2_override != self.config.actor.get("opd2_center_top_k", 1024):
+                raise ValueError("OPD2 centering override differs from the configured support")
+            data.meta_info["top_k"] = opd2_override
         if score_override is not None:
             configured = self.config.actor.get("jsd_score_top_k", None)
             if score_override != configured or score_override <= data.meta_info["top_k"]:
@@ -1016,6 +1023,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 output, entropys, topk_ids, topk_log_probs = self.actor.compute_log_prob(data=data, calculate_entropy=True)
             
             tensors = {"old_log_probs": output, "entropys": entropys}
+            if opd2_override is not None:
+                from verl.trainer.ppo.opd2 import force_include_sampled_token
+
+                topk_ids, topk_log_probs = force_include_sampled_token(
+                    topk_ids, topk_log_probs, data.batch["responses"], output
+                )
             if topk_ids is not None:
                 tensors["student_top_k_ids"] = topk_ids
             if topk_log_probs is not None:

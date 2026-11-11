@@ -213,6 +213,14 @@ see [the support-audit guide](../experiments/jsd_support/README.md).
 Run `bash experiments/jsd_support/train.sh 8` or `64`. These set the independent
 `JSD_SCORE_TOP_K`; changing `LOG_PROB_TOP_K` alone would also change the reward.
 
+## OPD2-style gating + Direct-OPD
+
+Run `bash experiments/opd2_direct/train.sh` to transfer the centered-sign-agreement
+mechanism to our top-16 Direct-OPD update. See [the experiment notes](../experiments/opd2_direct/README.md)
+for exact centering, variable candidate retention, dense anchor KL and differences
+from the paper's sampled-token objective. This mode must not be combined with
+JSD/entropy/TA position selection.
+
 ## Held-out evaluation
 
 Evaluate a Hugging Face-format model on AIME26 and the two HMMT sets:
