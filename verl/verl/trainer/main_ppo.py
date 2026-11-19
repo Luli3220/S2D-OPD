@@ -22,7 +22,7 @@ import hydra
 import ray
 from omegaconf import OmegaConf
 
-from verl.experimental.dataset.sampler import AbstractSampler, SequentialOffsetSampler
+from verl.experimental.dataset.sampler import AbstractSampler
 from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 from verl.trainer.ppo.reward import load_reward_manager
@@ -450,8 +450,10 @@ def create_rl_sampler(data_config, dataset):
     elif prompt_offset:
         # The offset applies after dataset loading and overlong-prompt filtering,
         # i.e. to the exact sequence consumed by the training dataloader.
-        sampler = SequentialOffsetSampler(data_source=dataset, offset=prompt_offset)
-        print(f"Skipping the first {prompt_offset} training prompts; {len(sampler)} prompts remain")
+        raise NotImplementedError(
+            "train_prompt_offset requires verl.experimental.dataset.sampler.SequentialOffsetSampler, "
+            "which is not defined in this revision"
+        )
     else:
         # If shuffling is disabled, use a sequential sampler to iterate through the dataset in order.
         sampler = SequentialSampler(data_source=dataset)
