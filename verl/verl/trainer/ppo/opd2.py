@@ -43,6 +43,11 @@ def force_include_sampled_token(ids, log_probs, responses, sampled_log_probs):
     """Official centering support convention: replace the last entry on a miss."""
     import torch
 
+    # Candidate ids/log-probs arrive on the worker device while responses and
+    # sampled log-probs may still be CPU tensors; align everything to ids first.
+    device = ids.device
+    responses = responses.to(device)
+    sampled_log_probs = sampled_log_probs.to(device)
     missing = ~(ids == responses.unsqueeze(-1)).any(dim=-1)
     ids, log_probs = ids.clone(), log_probs.clone()
     ids[..., -1] = torch.where(missing, responses, ids[..., -1])
@@ -90,9 +95,10 @@ def collect_opd2_centering(batch, actor_worker, teacher_worker, reference_worker
     student_output = actor_worker.compute_log_prob(scoring)
     scoring = scoring.union(student_output)
     scoring.meta_info.pop("opd2_center_top_k_override", None)
-    # Existing reward-worker K=0 + supplied candidate IDs gathers cross log-probs
-    # directly, without allocating an unnecessary 1024x1024 top-k overlap matrix.
-    scoring.meta_info["log_prob_top_k"] = 0
+    # Keep the reward worker at the same top-k used to build the centering support
+    # so teacher_on_student_log_probs is produced over the supplied candidate ids.
+    # A K=0 request skips that gather entirely and leaves the key undefined.
+    scoring.meta_info["log_prob_top_k"] = center_k
     scoring.meta_info["top_k_strategy"] = "only_stu"
     if "entropys" in scoring.batch.keys():
         scoring.batch.pop("entropys")
